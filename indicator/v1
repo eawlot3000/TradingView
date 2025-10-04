@@ -1,0 +1,201 @@
+/*
+this version of code is pretty the earliest verison of code already and i think its generated and fix and upgraded from
+chatgpt-5 and claude sonnet 4.5
+its has too many flaws and could got too many signals to i have already upgraded to a better version.
+*/
+
+
+
+
+
+//@version=5
+indicator("MTF EMA 确认信号 [Pro]", overlay=true, max_labels_count=500)
+
+// ============================================
+// 📌 可修改参数区域
+// ============================================
+ema_fast = input.int(9, "快线EMA周期", minval=1, group="EMA设置")
+ema_slow = input.int(21, "慢线EMA周期", minval=1, group="EMA设置")
+slope_length = input.int(1, "斜率计算周期", minval=1, group="EMA设置")
+
+tf1 = input.timeframe("5", "时间框架1", group="时间框架")
+weight1 = input.float(1.0, "权重1", minval=0.1, maxval=5.0, step=0.1, group="时间框架")
+
+tf2 = input.timeframe("10", "时间框架2", group="时间框架")
+weight2 = input.float(1.5, "权重2", minval=0.1, maxval=5.0, step=0.1, group="时间框架")
+
+tf3 = input.timeframe("30", "时间框架3", group="时间框架")
+weight3 = input.float(2.0, "权重3", minval=0.1, maxval=5.0, step=0.1, group="时间框架")
+
+tf4 = input.timeframe("60", "时间框架4", group="时间框架")
+weight4 = input.float(3.0, "权重4", minval=0.1, maxval=5.0, step=0.1, group="时间框架")
+
+signal_threshold = input.float(5.0, "信号阈值分数", minval=0, step=0.5, group="信号设置")
+gate_mode = input.bool(false, "启用门控模式", group="信号设置")
+cooldown_bars = input.int(5, "冷却期(K线数)", minval=0, group="信号设置")
+
+use_confirmed = input.bool(true, "防重绘模式", group="高级设置")
+
+use_atr_filter = input.bool(false, "启用ATR波动率过滤", group="过滤器")
+atr_length = input.int(14, "ATR周期", minval=1, group="过滤器")
+atr_threshold = input.float(0.5, "最低ATR%", minval=0, step=0.1, group="过滤器")
+
+use_cmf_filter = input.bool(false, "启用CMF资金流过滤", group="过滤器")
+cmf_length = input.int(20, "CMF周期", minval=1, group="过滤器")
+cmf_threshold = input.float(0.0, "CMF阈值", minval=-1.0, maxval=1.0, step=0.05, group="过滤器")
+
+show_ema_current = input.bool(true, "显示当前周期EMA线", group="显示")
+show_mtf_status = input.bool(true, "显示多间框架状态表", group="显示")
+show_score = input.bool(true, "在标签上显示分数", group="显示")
+
+// ============================================
+// CMF计算函数
+// ============================================
+cmf_calc(len) =>
+    ad = close==high and close==low or high==low ? 0 : ((2*close-low-high)/(high-low))*volume
+    math.sum(ad, len) / math.sum(volume, len)
+
+// ============================================
+// EMA趋势判断函数
+// ============================================
+get_ema_trend(simple string tf, float weight) =>
+    ema_fast_val = request.security(syminfo.tickerid, tf, ta.ema(close, ema_fast), lookahead=barmerge.lookahead_off)
+    ema_slow_val = request.security(syminfo.tickerid, tf, ta.ema(close, ema_slow), lookahead=barmerge.lookahead_off)
+    ema_fast_prev = request.security(syminfo.tickerid, tf, ta.ema(close[slope_length], ema_fast), lookahead=barmerge.lookahead_off)
+    ema_slow_prev = request.security(syminfo.tickerid, tf, ta.ema(close[slope_length], ema_slow), lookahead=barmerge.lookahead_off)
+    is_confirmed = request.security(syminfo.tickerid, tf, barstate.isconfirmed, lookahead=barmerge.lookahead_off)
+    
+    trend_result = 0
+    score_result = 0.0
+    confirmed_result = true
+    
+    if use_confirmed and not is_confirmed
+        trend_result := 0
+        confirmed_result := false
+    else
+        fast_slope = ema_fast_val - ema_fast_prev
+        slow_slope = ema_slow_val - ema_slow_prev
+        
+        if ema_fast_val > ema_slow_val and fast_slope > 0 and slow_slope > 0
+            trend_result := 1
+            score_result := weight
+        else if ema_fast_val < ema_slow_val and fast_slope < 0 and slow_slope < 0
+            trend_result := -1
+            score_result := weight
+    
+    [trend_result, ema_fast_val, ema_slow_val, confirmed_result, score_result]
+
+// ============================================
+// 获取4个时间框架的趋势
+// ============================================
+[trend1, ema9_tf1, ema21_tf1, confirmed1, score1] = get_ema_trend(tf1, weight1)
+[trend2, ema9_tf2, ema21_tf2, confirmed2, score2] = get_ema_trend(tf2, weight2)
+[trend3, ema9_tf3, ema21_tf3, confirmed3, score3] = get_ema_trend(tf3, weight3)
+[trend4, ema9_tf4, ema21_tf4, confirmed4, score4] = get_ema_trend(tf4, weight4)
+
+// ============================================
+// 加权投票计算
+// ============================================
+bullish_score = (trend1 == 1 ? score1 : 0) + (trend2 == 1 ? score2 : 0) + (trend3 == 1 ? score3 : 0) + (trend4 == 1 ? score4 : 0)
+bearish_score = (trend1 == -1 ? score1 : 0) + (trend2 == -1 ? score2 : 0) + (trend3 == -1 ? score3 : 0) + (trend4 == -1 ? score4 : 0)
+max_score = weight1 + weight2 + weight3 + weight4
+
+gate_passed_bull = not gate_mode or trend4 == 1
+gate_passed_bear = not gate_mode or trend4 == -1
+
+// ============================================
+// ATR波动率过滤
+// ============================================
+atr_value = ta.atr(atr_length)
+atr_percent = atr_value / close * 100
+atr_pass = not use_atr_filter or atr_percent >= atr_threshold
+
+// ============================================
+// CMF资金流过滤
+// ============================================
+cmf_val = cmf_calc(cmf_length)
+cmf_pass_bull = not use_cmf_filter or cmf_val > cmf_threshold
+cmf_pass_bear = not use_cmf_filter or cmf_val < -cmf_threshold
+
+// ============================================
+// 信号生成逻辑
+// ============================================
+var int last_signal_bar = 0
+cooldown_passed = bar_index - last_signal_bar >= cooldown_bars
+
+buy_signal = bullish_score >= signal_threshold and gate_passed_bull and atr_pass and cmf_pass_bull and cooldown_passed
+sell_signal = bearish_score >= signal_threshold and gate_passed_bear and atr_pass and cmf_pass_bear and cooldown_passed
+
+buy_signal_new = buy_signal and not buy_signal[1]
+sell_signal_new = sell_signal and not sell_signal[1]
+
+if buy_signal_new or sell_signal_new
+    last_signal_bar := bar_index
+
+// ============================================
+// 绘制EMA线
+// ============================================
+current_ema9 = ta.ema(close, ema_fast)
+current_ema21 = ta.ema(close, ema_slow)
+
+plot(show_ema_current ? current_ema9 : na, "EMA9", color=color.new(color.blue, 0), linewidth=2)
+plot(show_ema_current ? current_ema21 : na, "EMA21", color=color.new(color.orange, 0), linewidth=2)
+
+// ============================================
+// 绘制买卖信号
+// ============================================
+plotshape(buy_signal_new, "买入信号", shape.triangleup, location.belowbar, color=color.new(color.green, 0), size=size.normal)
+plotshape(sell_signal_new, "卖出信号", shape.triangledown, location.abovebar, color=color.new(color.red, 0), size=size.normal)
+
+// ============================================
+// 信号标签
+// ============================================
+if buy_signal_new
+    signal_text = "买入信号" + (show_score ? " [" + str.tostring(bullish_score, "#.#") + "/" + str.tostring(max_score, "#.#") + "]\n" : "\n") + (trend1 == 1 ? "✓ " + tf1 + " [" + str.tostring(weight1, "#.#") + "]\n" : "") + (trend2 == 1 ? "✓ " + tf2 + " [" + str.tostring(weight2, "#.#") + "]\n" : "") + (trend3 == 1 ? "✓ " + tf3 + " [" + str.tostring(weight3, "#.#") + "]\n" : "") + (trend4 == 1 ? "✓ " + tf4 + " [" + str.tostring(weight4, "#.#") + "]" : "")
+    label.new(bar_index, low, signal_text, style=label.style_label_up, color=color.new(color.green, 80), textcolor=color.white, size=size.small)
+
+if sell_signal_new
+    signal_text = "卖出信号" + (show_score ? " [" + str.tostring(bearish_score, "#.#") + "/" + str.tostring(max_score, "#.#") + "]\n" : "\n") + (trend1 == -1 ? "✓ " + tf1 + " [" + str.tostring(weight1, "#.#") + "]\n" : "") + (trend2 == -1 ? "✓ " + tf2 + " [" + str.tostring(weight2, "#.#") + "]\n" : "") + (trend3 == -1 ? "✓ " + tf3 + " [" + str.tostring(weight3, "#.#") + "]\n" : "") + (trend4 == -1 ? "✓ " + tf4 + " [" + str.tostring(weight4, "#.#") + "]" : "")
+    label.new(bar_index, high, signal_text, style=label.style_label_down, color=color.new(color.red, 80), textcolor=color.white, size=size.small)
+
+// ============================================
+// 状态表格
+// ============================================
+if show_mtf_status and barstate.islast
+    var table status_table = table.new(position.top_right, 4, 6, border_width=1, border_color=color.gray)
+    
+    if barstate.isfirst
+        table.cell(status_table, 0, 0, "周期", bgcolor=color.new(color.gray, 70), text_color=color.white)
+        table.cell(status_table, 1, 0, "趋势", bgcolor=color.new(color.gray, 70), text_color=color.white)
+        table.cell(status_table, 2, 0, "权重", bgcolor=color.new(color.gray, 70), text_color=color.white)
+        table.cell(status_table, 3, 0, "得分", bgcolor=color.new(color.gray, 70), text_color=color.white)
+    
+    table.cell(status_table, 0, 1, tf1, text_color=color.white)
+    table.cell(status_table, 1, 1, trend1 == 1 ? "↑" : trend1 == -1 ? "↓" : "—", bgcolor=trend1 == 1 ? color.new(color.green, 70) : trend1 == -1 ? color.new(color.red, 70) : color.new(color.gray, 80), text_color=color.white)
+    table.cell(status_table, 2, 1, str.tostring(weight1, "#.#"), text_color=color.white)
+    table.cell(status_table, 3, 1, str.tostring(score1, "#.#"), text_color=color.white)
+    
+    table.cell(status_table, 0, 2, tf2, text_color=color.white)
+    table.cell(status_table, 1, 2, trend2 == 1 ? "↑" : trend2 == -1 ? "↓" : "—", bgcolor=trend2 == 1 ? color.new(color.green, 70) : trend2 == -1 ? color.new(color.red, 70) : color.new(color.gray, 80), text_color=color.white)
+    table.cell(status_table, 2, 2, str.tostring(weight2, "#.#"), text_color=color.white)
+    table.cell(status_table, 3, 2, str.tostring(score2, "#.#"), text_color=color.white)
+    
+    table.cell(status_table, 0, 3, tf3, text_color=color.white)
+    table.cell(status_table, 1, 3, trend3 == 1 ? "↑" : trend3 == -1 ? "↓" : "—", bgcolor=trend3 == 1 ? color.new(color.green, 70) : trend3 == -1 ? color.new(color.red, 70) : color.new(color.gray, 80), text_color=color.white)
+    table.cell(status_table, 2, 3, str.tostring(weight3, "#.#"), text_color=color.white)
+    table.cell(status_table, 3, 3, str.tostring(score3, "#.#"), text_color=color.white)
+    
+    table.cell(status_table, 0, 4, tf4, text_color=color.white)
+    table.cell(status_table, 1, 4, trend4 == 1 ? "↑" : trend4 == -1 ? "↓" : "—", bgcolor=trend4 == 1 ? color.new(color.green, 70) : trend4 == -1 ? color.new(color.red, 70) : color.new(color.gray, 80), text_color=color.white)
+    table.cell(status_table, 2, 4, str.tostring(weight4, "#.#"), text_color=color.white)
+    table.cell(status_table, 3, 4, str.tostring(score4, "#.#"), text_color=color.white)
+    
+    table.cell(status_table, 0, 5, "总分", bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.cell(status_table, 1, 5, bullish_score > bearish_score ? "↑" : bearish_score > bullish_score ? "↓" : "—", bgcolor=bullish_score > bearish_score ? color.new(color.green, 70) : bearish_score > bullish_score ? color.new(color.red, 70) : color.new(color.gray, 80), text_color=color.white)
+    table.cell(status_table, 2, 5, str.tostring(max_score, "#.#"), text_color=color.white)
+    table.cell(status_table, 3, 5, str.tostring(math.max(bullish_score, bearish_score), "#.#") + "/" + str.tostring(signal_threshold, "#.#"), text_color=bullish_score >= signal_threshold or bearish_score >= signal_threshold ? color.yellow : color.white)
+
+alertcondition(buy_signal_new, "买入信号", "多时间框架确认买入信号")
+alertcondition(sell_signal_new, "卖出信号", "多时间框架确认卖出信号")
+
+bgcolor(buy_signal ? color.new(color.green, 95) : sell_signal ? color.new(color.red, 95) : na)
